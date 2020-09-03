@@ -8,8 +8,8 @@ use std::ops;
 use std::path::Path;
 
 use format::Error as MapError;
-use format::MapItem;
 use format::MapItemExt;
+use format::MapItemReadResult;
 use format;
 
 #[derive(Debug)]
@@ -88,37 +88,6 @@ fn get_index_opt<E, II>(index: i32, indices: ops::Range<usize>, invalid_index: I
     get_index_impl(index, indices).ok_or_else(|| invalid_index(index)).map(Some)
 }
 
-trait MapItemExtInternal: MapItem {
-    fn optional<E, TS>(slice: &[i32], too_short: TS)
-        -> Result<Option<&Self>, E>
-        where TS: FnOnce(usize) -> E,
-    {
-        Self::from_slice(slice).map_err(|_| too_short(slice.len()))
-    }
-    fn mandatory<E, TS, IV>(slice: &[i32], too_short: TS, invalid_version: IV)
-        -> Result<&Self, E>
-        where TS: FnOnce(usize) -> E,
-              IV: FnOnce(i32) -> E,
-    {
-        Self::optional(slice, too_short)?.ok_or_else(|| invalid_version(slice[0]))
-    }
-    fn optional_rest<E, TS>(slice: &[i32], too_short: TS)
-        -> Result<Option<(&Self, &[i32])>, E>
-        where TS: FnOnce(usize) -> E,
-    {
-        Self::from_slice_rest(slice).map_err(|_| too_short(slice.len()))
-    }
-    fn mandatory_rest<E, TS, IV>(slice: &[i32], too_short: TS, invalid_version: IV)
-        -> Result<(&Self, &[i32]), E>
-        where TS: FnOnce(usize) -> E,
-              IV: FnOnce(i32) -> E,
-    {
-        Self::optional_rest(slice, too_short)?.ok_or_else(|| invalid_version(slice[0]))
-    }
-}
-
-impl<T: MapItem> MapItemExtInternal for T { }
-
 trait AugmentResult {
     type AddIndex;
     fn add_index(self, index: usize) -> Self::AddIndex;
@@ -158,9 +127,9 @@ impl Group {
     {
         use format::GroupError::*;
 
-        let v1 = format::MapItemGroupV1::mandatory(raw, TooShort, InvalidVersion)?;
-        let v2 = format::MapItemGroupV2::optional(raw, TooShort)?;
-        let v3 = format::MapItemGroupV3::optional(raw, TooShort)?;
+        let v1 = format::MapItemGroupV1::from_slice(raw).mandatory(TooShort, InvalidVersion)?;
+        let v2 = format::MapItemGroupV2::from_slice(raw).optional(TooShort)?;
+        let v3 = format::MapItemGroupV3::from_slice(raw).optional(TooShort)?;
 
         let sl = InvalidStartLayerIndex(v1.start_layer, v1.num_layers);
         let nl = InvalidNumLayers(v1.start_layer, v1.num_layers);
@@ -216,9 +185,9 @@ impl DdraceLayerSounds {
     ) -> Result<DdraceLayerSounds, format::DdraceLayerSoundsError>
     {
         use format::DdraceLayerSoundsError::*;
-        let v1 = format::MapItemLayerV1DdraceSoundsV1::mandatory(raw, TooShort, InvalidVersion)?;
+        let v1 = format::MapItemLayerV1DdraceSoundsV1::from_slice(raw).mandatory(TooShort, InvalidVersion)?;
         if !legacy {
-            format::MapItemLayerV1DdraceSoundsV2::mandatory(raw, TooShortV2, InvalidVersion)?;
+            format::MapItemLayerV1DdraceSoundsV2::from_slice(raw).mandatory(TooShortV2, InvalidVersion)?;
         }
         Ok(DdraceLayerSounds {
             num_sources: v1.num_sources.try_usize().ok_or(InvalidNumSources(v1.num_sources))?,
@@ -247,8 +216,8 @@ impl LayerQuads {
     {
         use format::LayerQuadsError::*;
 
-        let v1 = format::MapItemLayerV1QuadsV1::mandatory(raw, TooShort, InvalidVersion)?;
-        let v2 = format::MapItemLayerV1QuadsV2::optional(raw, TooShortV2)?;
+        let v1 = format::MapItemLayerV1QuadsV1::from_slice(raw).mandatory(TooShort, InvalidVersion)?;
+        let v2 = format::MapItemLayerV1QuadsV2::from_slice(raw).optional(TooShortV2)?;
         let name = v2.map(|v2| v2.name_get()).unwrap_or([0; 12]);
         Ok(LayerQuads {
             num_quads: v1.num_quads.try_usize().ok_or(InvalidNumQuads(v1.num_quads))?,
@@ -339,9 +308,9 @@ impl LayerTilemap {
                 .ok_or_else(|| too_short(raw.len()))
         }
 
-        let v0 = format::MapItemLayerV1CommonV0::mandatory(raw, TooShort, InvalidVersion)?;
-        let v2 = format::MapItemLayerV1TilemapV2::mandatory(raw, TooShortV2, InvalidVersion)?;
-        let v3 = format::MapItemLayerV1TilemapV3::optional(raw, TooShortV3)?;
+        let v0 = format::MapItemLayerV1CommonV0::from_slice(raw).mandatory(TooShort, InvalidVersion)?;
+        let v2 = format::MapItemLayerV1TilemapV2::from_slice(raw).mandatory(TooShortV2, InvalidVersion)?;
+        let v3 = format::MapItemLayerV1TilemapV3::from_slice(raw).optional(TooShortV3)?;
         let flags = v2.flags as u32;
 
         // TODO: Standard settings for game group.
@@ -471,8 +440,7 @@ impl Layer {
     ) -> Result<Layer, format::LayerError> {
         use format::LayerError::*;
 
-        let (v1, rest) = format::MapItemLayerV1::mandatory_rest(
-            raw,
+        let (v1, rest) = format::MapItemLayerV1::from_slice(raw).mandatory_rest(
             TooShort,
             // MapItemLayerV1 doesn't check the version as it is not set by the
             // reference implementation, and contains arbitrary garbage.
@@ -519,7 +487,7 @@ impl Image {
     {
         use format::ImageError::*;
 
-        let v1 = format::MapItemImageV1::mandatory(raw, TooShort, InvalidVersion)?;
+        let v1 = format::MapItemImageV1::from_slice(raw).mandatory(TooShort, InvalidVersion)?;
         // WARN if external is something other than 0,1
         let data = if v1.external != 0 {
             None
@@ -589,8 +557,11 @@ impl Info {
     {
         use format::InfoError::*;
 
-        let v1 = format::MapItemInfoV1::mandatory(raw, TooShort, InvalidVersion)?;
-        let v2 = format::MapItemInfoV2::from_slice(raw).ok().and_then(|x| x);
+        let v1 = format::MapItemInfoV1::from_slice(raw).mandatory(TooShort, InvalidVersion)?;
+        let v2 = match format::MapItemInfoV2::from_slice(raw) {
+            MapItemReadResult::Ok(item, _) => Some(item),
+            _ => None,
+        };
         Ok(Info {
             author: get_index_opt(v1.author, data_indices.clone(), InvalidAuthorIndex)?,
             version: get_index_opt(v1.version, data_indices.clone(), InvalidVersionIndex)?,
@@ -658,8 +629,7 @@ impl Reader {
     pub fn version(&self) -> Result<i32, MapError> {
         let raw = self.reader.find_item(format::MAP_ITEMTYPE_VERSION, 0)
             .ok_or(MapError::MissingVersion)?;
-        let v0 = format::MapItemCommonV0::mandatory(
-            raw.data,
+        let v0 = format::MapItemCommonV0::from_slice(raw.data).mandatory(
             |_| MapError::EmptyVersion,
             // MapItemCommonV0 doesn't check the version.
             |_| unreachable!(),

@@ -17,53 +17,89 @@ pub trait MapItemExt: MapItem {
     fn sum_len() -> usize {
         Self::offset() + Self::len()
     }
-    fn from_slice(slice: &[i32]) -> Result<Option<&Self>, TooShort> {
-        Self::from_slice_rest(slice).map(|o| o.map(|(f, _)| f))
-    }
-    fn from_slice_mut(slice: &mut [i32]) -> Result<Option<&mut Self>, TooShort> {
-        Self::from_slice_rest_mut(slice).map(|o| o.map(|(f, _)| f))
-    }
-    fn from_slice_rest(slice: &[i32]) -> Result<Option<(&Self, &[i32])>, TooShort> {
+    fn from_slice(slice: &[i32])
+        -> MapItemReadResult<&Self, &[i32]>
+    {
         if !Self::ignore_version() {
             if slice.len() == 0 {
-                return Err(TooShort);
+                return MapItemReadResult::SliceTooShort(slice.len());
             }
             if slice[0] < Self::version() {
-                return Ok(None);
+                return MapItemReadResult::VersionTooLow(slice[0]);
             }
         }
         if slice.len() < Self::sum_len() {
-            return Err(TooShort);
+            return MapItemReadResult::SliceTooShort(slice.len());
         }
         let result: &[i32] = &slice[Self::offset()..];
         let (item, rest) = result.split_at(Self::len());
         assert!(item.len() * mem::size_of::<i32>() == mem::size_of::<Self>());
-        Ok(Some((unsafe { &*(item.as_ptr() as *const Self) }, rest)))
+        MapItemReadResult::Ok(unsafe { &*(item.as_ptr() as *const Self) }, rest)
     }
-    fn from_slice_rest_mut(slice: &mut [i32])
-        -> Result<Option<(&mut Self, &mut [i32])>, TooShort>
+    fn from_slice_mut(slice: &mut [i32])
+        -> MapItemReadResult<&mut Self, &mut [i32]>
     {
         if !Self::ignore_version() {
             if slice.len() == 0 {
-                return Err(TooShort);
+                return MapItemReadResult::SliceTooShort(slice.len());
             }
             if slice[0] < Self::version() {
-                return Ok(None);
+                return MapItemReadResult::VersionTooLow(slice[0]);
             }
         }
         if slice.len() < Self::sum_len() {
-            return Err(TooShort);
+            return MapItemReadResult::SliceTooShort(slice.len());
         }
         let result: &mut [i32] = &mut slice[Self::offset()..];
         let (item, rest) = result.split_at_mut(Self::len());
         assert!(item.len() * mem::size_of::<i32>() == mem::size_of::<Self>());
-        Ok(Some((unsafe { &mut *(item.as_mut_ptr() as *mut Self) }, rest)))
+        MapItemReadResult::Ok(unsafe { &mut *(item.as_mut_ptr() as *mut Self) }, rest)
     }
 }
 
 impl<T: MapItem> MapItemExt for T { }
 
-pub struct TooShort;
+pub enum MapItemReadResult<T, Rest> {
+    Ok(T, Rest),
+    SliceTooShort(usize),
+    VersionTooLow(i32),
+}
+
+impl<T, Rest> MapItemReadResult<T, Rest> {
+    pub fn optional<E, TS>(self, too_short: TS)
+        -> Result<Option<T>, E>
+        where TS: FnOnce(usize) -> E
+    {
+        match self {
+            Self::Ok(item, _) => Ok(Some(item)),
+            Self::SliceTooShort(size) => Err(too_short(size)),
+            Self::VersionTooLow(_) => Ok(None),
+        }
+    }
+
+    pub fn mandatory<E, TS, IV>(self, too_short: TS, invalid_version: IV)
+        -> Result<T, E>
+        where TS: FnOnce(usize) -> E,
+              IV: FnOnce(i32) -> E,
+    {
+        match self.mandatory_rest(too_short, invalid_version) {
+            Ok((item, _rest)) => Ok(item),
+            Err(x) => Err(x),
+        }
+    }
+
+    pub fn mandatory_rest<E, TS, IV>(self, too_short: TS, invalid_version: IV)
+        -> Result<(T, Rest), E>
+        where TS: FnOnce(usize) -> E,
+              IV: FnOnce(i32) -> E,
+    {
+        match self {
+            Self::Ok(item, rest) => Ok((item, rest)),
+            Self::SliceTooShort(size) => Err(too_short(size)),
+            Self::VersionTooLow(version) => Err(invalid_version(version)),
+        }
+    }
+}
 
 pub fn i32s_to_bytes(result: &mut [u8], input: &[i32]) {
     assert!(result.len() == input.len() * mem::size_of::<i32>());
